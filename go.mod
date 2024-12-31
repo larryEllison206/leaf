@@ -1,5 +1,7 @@
 module github.com/name5566/leaf
 
+go 1.17
+
 require (
 	github.com/golang/protobuf v1.2.0
 	github.com/gorilla/websocket v1.4.0
