@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 )
@@ -14,7 +15,7 @@ type WSConn struct {
 	sync.Mutex
 	conn           *websocket.Conn
 	maxMsgLen      uint32
-	closeFlag      bool
+	closeFlag      int32
 	remoteOriginIP net.Addr
 }
 
@@ -31,12 +32,12 @@ func (wsConn *WSConn) SetOriginIP(ip net.Addr) {
 }
 
 func (wsConn *WSConn) doDestroy() {
-	wsConn.conn.UnderlyingConn().(*net.TCPConn).SetLinger(0)
+	if tcpConn, ok := wsConn.conn.UnderlyingConn().(*net.TCPConn); ok {
+		tcpConn.SetLinger(0)
+	}
 	wsConn.conn.Close()
 
-	if !wsConn.closeFlag {
-		wsConn.closeFlag = true
-	}
+	atomic.StoreInt32(&wsConn.closeFlag, 1)
 }
 
 func (wsConn *WSConn) Destroy() {
@@ -49,11 +50,11 @@ func (wsConn *WSConn) Destroy() {
 func (wsConn *WSConn) Close() {
 	wsConn.Lock()
 	defer wsConn.Unlock()
-	if wsConn.closeFlag {
+	if atomic.LoadInt32(&wsConn.closeFlag) != 0 {
 		return
 	}
 
-	wsConn.closeFlag = true
+	atomic.StoreInt32(&wsConn.closeFlag, 1)
 }
 
 func (wsConn *WSConn) LocalAddr() net.Addr {
@@ -75,37 +76,37 @@ func (wsConn *WSConn) ReadMsg() ([]byte, error) {
 
 // args must not be modified by the others goroutines
 func (wsConn *WSConn) WriteMsg(args ...[]byte) error {
-	wsConn.Lock()
-	defer wsConn.Unlock()
-	if wsConn.closeFlag {
+	// 无锁检查 closeFlag
+	if atomic.LoadInt32(&wsConn.closeFlag) != 0 {
 		return nil
 	}
 
-	// get len
+	// 锁外：计算长度
 	var msgLen uint32
 	for i := 0; i < len(args); i++ {
 		msgLen += uint32(len(args[i]))
 	}
 
-	// check len
+	// 锁外：长度检查
 	if msgLen > wsConn.maxMsgLen {
 		return errors.New("message too long")
 	} else if msgLen < 1 {
 		return errors.New("message too short")
 	}
 
-	// don't copy
+	// 锁外：准备数据
+	var msg []byte
 	if len(args) == 1 {
-		return wsConn.conn.WriteMessage(websocket.BinaryMessage, args[0])
+		msg = args[0]
+	} else {
+		msg = make([]byte, msgLen)
+		l := 0
+		for i := 0; i < len(args); i++ {
+			copy(msg[l:], args[i])
+			l += len(args[i])
+		}
 	}
 
-	// merge the args
-	msg := make([]byte, msgLen)
-	l := 0
-	for i := 0; i < len(args); i++ {
-		copy(msg[l:], args[i])
-		l += len(args[i])
-	}
-
+	// 直接写入，利用 websocket.Conn 内置锁
 	return wsConn.conn.WriteMessage(websocket.BinaryMessage, msg)
 }

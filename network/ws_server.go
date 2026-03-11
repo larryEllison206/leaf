@@ -2,13 +2,14 @@ package network
 
 import (
 	"crypto/tls"
-	"github.com/gorilla/websocket"
-	"github.com/name5566/leaf/log"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/name5566/leaf/log"
 )
 
 type WSServer struct {
@@ -86,7 +87,7 @@ func (handler *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	agent.Run()
 
 	// cleanup
-	wsConn.Close()
+	wsConn.Destroy()
 	handler.mutexConns.Lock()
 	delete(handler.conns, conn)
 	handler.mutexConns.Unlock()
