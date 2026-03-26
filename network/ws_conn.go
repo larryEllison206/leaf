@@ -54,7 +54,7 @@ func (wsConn *WSConn) Close() {
 		return
 	}
 
-	atomic.StoreInt32(&wsConn.closeFlag, 1)
+	wsConn.doDestroy()
 }
 
 func (wsConn *WSConn) LocalAddr() net.Addr {
@@ -76,25 +76,20 @@ func (wsConn *WSConn) ReadMsg() ([]byte, error) {
 
 // args must not be modified by the others goroutines
 func (wsConn *WSConn) WriteMsg(args ...[]byte) error {
-	// 无锁检查 closeFlag
-	if atomic.LoadInt32(&wsConn.closeFlag) != 0 {
-		return nil
-	}
-
-	// 锁外：计算长度
+	// 计算长度（锁外）
 	var msgLen uint32
 	for i := 0; i < len(args); i++ {
 		msgLen += uint32(len(args[i]))
 	}
 
-	// 锁外：长度检查
+	// 长度检查（锁外）
 	if msgLen > wsConn.maxMsgLen {
 		return errors.New("message too long")
 	} else if msgLen < 1 {
 		return errors.New("message too short")
 	}
 
-	// 锁外：准备数据
+	// 准备数据（锁外）
 	var msg []byte
 	if len(args) == 1 {
 		msg = args[0]
@@ -107,6 +102,13 @@ func (wsConn *WSConn) WriteMsg(args ...[]byte) error {
 		}
 	}
 
-	// 直接写入，利用 websocket.Conn 内置锁
+	// 上锁：再次检查 closeFlag 并进行写入，保证原子性
+	wsConn.Lock()
+	defer wsConn.Unlock()
+
+	if atomic.LoadInt32(&wsConn.closeFlag) != 0 {
+		return errors.New("connection closed")
+	}
+
 	return wsConn.conn.WriteMessage(websocket.BinaryMessage, msg)
 }
